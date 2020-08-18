@@ -12,13 +12,14 @@ from backbone import resnet50 as Backbone
 
 
 class Detector(nn.Module):
-    def __init__(self, pretrained=False):
+    def __init__(self, frame_weights, pretrained=False):
         super(Detector, self).__init__()
 
         # ---------------------------
         # TODO: Param
         self.view_size = 1025 # odd
-        self.classes = 80
+        self.classes = 315
+        self.frame_classes = 64
         self.nms_th = 0.05
         self.nms_iou = 0.6
         self.max_detections = 3000
@@ -26,6 +27,7 @@ class Detector(nn.Module):
         self.phpw = [[129, 129], [65, 65], [33, 33], [17, 17], [9, 9]]
         self.r = [12, 24, 48, 96, 192]
         # ---------------------------
+        self.frame_weights = frame_weights
 
         # fpn =======================================================
         self.backbone = Backbone(pretrained=pretrained)
@@ -60,6 +62,18 @@ class Detector(nn.Module):
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 4, kernel_size=3, padding=1))
+        self.conv_frame = nn.Sequential(
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(256, self.frame_classes)
+        )
 
         # reinit head =======================================================
         init_layers = [self.conv_cls, self.conv_reg]
@@ -106,7 +120,7 @@ class Detector(nn.Module):
         return torch.stack([ymin, xmin, ymax, xmax], dim=3)
     
 
-    def forward(self, imgs, locs, label_class=None, label_box=None):
+    def forward(self, imgs, locs, label_class=None, label_box=None, label_frame=None):
         '''
         Param:
         imgs:        F(b, 3, vsz, vsz)
@@ -143,7 +157,7 @@ class Detector(nn.Module):
         pred_reg = []
         for i, feature in enumerate(pred_list):
             cls_i = self.conv_cls(feature)
-            reg_i =  self.conv_reg(feature) * self.scale_param[i]
+            reg_i = self.conv_reg(feature) * self.scale_param[i]
             cls_i = cls_i.permute(0,2,3,1).contiguous()
             reg_i = reg_i.permute(0,2,3,1).contiguous() # b, ph, pw, 4
             reg_i = self.decode_box(reg_i, self.view_size, self.view_size, self.phpw[i][0], self.phpw[i][1])
@@ -153,6 +167,7 @@ class Detector(nn.Module):
         pred_reg = torch.cat(pred_reg, dim=1)
         # pred_cls: F(b, n, classes)
         # pred_reg: F(b, n, 4)
+        pred_frame = self.conv_frame(pred_list[-1])
 
         if (label_class is not None) and (label_box is not None):
             # <= 200
@@ -184,12 +199,13 @@ class Detector(nn.Module):
                 loss_cls_b = sigmoid_focal_loss(pred_cls_b, target_cls_b, 2.0, 0.25).sum().view(1)
                 loss_reg_b = iou_loss(pred_reg_b, target_reg_b).sum().view(1)
                 loss.append((loss_cls_b + loss_reg_b) / float(num_pos[b]))
-            return torch.cat(loss, dim=0) # F(b)
+            loss_frame = F.cross_entropy(pred_frame, label_frame.flatten(), self.frame_weights.to(pred_frame.device)).view((1,))
+            return torch.cat(loss, dim=0), loss_frame # F(b)
         else:
-            return self._decode(pred_cls, pred_reg, locs)
+            return self._decode(pred_cls, pred_reg, locs, pred_frame)
     
 
-    def _decode(self, pred_cls, pred_reg, locs):
+    def _decode(self, pred_cls, pred_reg, locs, pred_frame):
         '''
         Param:
         pred_cls:   F(b, n, classes)
@@ -216,7 +232,8 @@ class Detector(nn.Module):
             pred_reg_b[:, 2].clamp_(max=float(locs[b, 2]))
             pred_reg_b[:, 3].clamp_(max=float(locs[b, 3]))
             _reg.append(pred_reg_b) # (topk, 4)
-        return torch.stack(_cls_i), torch.stack(_cls_p), torch.stack(_reg)
+        _frame = F.softmax(pred_frame, dim=1).max(1, keepdim=True)[1]
+        return (torch.stack(_cls_i), torch.stack(_cls_p), torch.stack(_reg)), _frame
 
 
 

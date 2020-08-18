@@ -14,7 +14,7 @@ from detector import get_loss, get_pred
 
 
 class Trainer(object):
-    def __init__(self, net, dataset, loader, device,   
+    def __init__(self, net, dataset, loader, device,
                     opt, grad_clip=3, lr_func=None):
         '''
         external initialization structure: 
@@ -39,7 +39,7 @@ class Trainer(object):
         train one epoch
         '''
         lr = -1
-        for i, (imgs, boxes, labels, locs, scales) in enumerate(self.loader):
+        for i, (imgs, boxes, labels, frame_labels, locs, scales) in enumerate(self.loader):
             if self.lr_func is not None:
                 lr = self.lr_func(self.step)
                 for param_group in self.opt.param_groups:
@@ -48,8 +48,8 @@ class Trainer(object):
                 batch_size = int(imgs.shape[0])
             time_start = time.time()
             self.opt.zero_grad()
-            temp = self.net(imgs, locs, labels, boxes)
-            loss = get_loss(temp)
+            temp, loss_frame = self.net(imgs, locs, labels, boxes, frame_labels)
+            loss = (get_loss(temp) + get_loss(loss_frame)) / 2
             loss.backward()
             if self.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), self.grad_clip)
@@ -84,10 +84,11 @@ class Evaluator(object):
         with torch.no_grad():
             self.net.eval()
             pred_bboxes, pred_labels, pred_scores, gt_bboxes, gt_labels = [], [], [], [], []
-            for i, (imgs, boxes, labels, locs, scales) in enumerate(self.loader):
+            pred_frames, gt_frames = [], []
+            for i, (imgs, boxes, labels, frame_labels, locs, scales) in enumerate(self.loader):
                 if i == 0:
                     batch_size = int(imgs.shape[0])
-                temp = self.net(imgs, locs)
+                temp, pred_frame = self.net(imgs, locs)
                 pred_cls_i, pred_cls_p, pred_reg = get_pred(temp, 
                         self.net.module.nms_th, self.net.module.nms_iou) # DataParallel
                 for idx in range(len(pred_cls_i)):
@@ -104,6 +105,8 @@ class Evaluator(object):
                 pred_scores += pred_cls_p
                 gt_bboxes += _boxes
                 gt_labels += _label
+                pred_frames += pred_frame
+                gt_frames += frame_labels
                 print('  Eval: {}/{}'.format(i*batch_size, len(self.dataset)), end='\r')
             ap_iou = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
             ap_res = []
@@ -117,9 +120,12 @@ class Evaluator(object):
             map_mean = ap_sum / float(len(ap_res))
             map_50 = float(ap_res[0]['map'])
             map_75 = float(ap_res[5]['map'])
-            print('map_mean:', map_mean, 'map_50:', map_50, 'map_75:', map_75)
+            pred_frames = torch.cat(pred_frames)
+            gt_frames = torch.cat(gt_frames)
+            accuracy = pred_frames.eq(gt_frames.to(pred_frames.device).view_as(pred_frames)).sum().item() / len(gt_frames)
+            print('map_mean:', map_mean, 'map_50:', map_50, 'map_75:', map_75, 'frame_cls:', accuracy)
             self.net.train()
-            return map_mean, map_50, map_75
+            return map_mean, map_50, map_75, accuracy
 
 
 

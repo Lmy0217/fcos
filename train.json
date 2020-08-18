@@ -1,20 +1,21 @@
 {
-    "root_train": "/home1/xyt/dataset/coco17/images",
-    "root_eval": "/home1/xyt/dataset/coco17/images",
-    "list_train": "data/coco_train2017.txt",
-    "list_eval": "data/coco_val2017.txt",
-    "name_file": "data/coco_name.txt",
+    "root_train": ".",
+    "root_eval": ".",
+    "list_train": "/data/lmy/datasets/Data_labeled/trainset_list_c315.txt",
+    "list_eval": "/data/lmy/datasets/Data_labeled/valset_list_c315.txt",
+    "name_file": "/data/lmy/datasets/Data_labeled/trainset_name_c315.txt",
+    "frame_name_file": "/data/lmy/datasets/Data_labeled/trainset_frame_name_c315.txt",
 
     "load": false,
     "save": true,
     "pretrain": true,
     "freeze_bn": true,
     "freeze_stages": 1,
-    "epoches": 24,
+    "epoches": 300,
 
     "nbatch_train": 16,
     "nbatch_eval": 16,
-    "device": [1,2,3,5,6,7,8,9],
+    "device": [0,1,2,3],
     "num_workers": 16,
     
     "lr_base": 0.01,
@@ -24,10 +25,10 @@
     "weight_decay": 0.0001,
     "warmup_iter": 500,
 
-    "boxarea_th": 32,
+    "boxarea_th": 0,
     "grad_clip": 3,
     
     "img_scale_min": 0.8,
-    "augmentation": false,
+    "augmentation": true,
     "seed": 0
 }

@@ -22,18 +22,6 @@ if cfg['seed'] >= 0:
     torch.cuda.manual_seed_all(seed)
 
 
-# Prepare the network and read log
-net = Detector(pretrained=cfg['pretrain'])
-log = []
-device_out = 'cuda:%d' % (cfg['device'][0])
-if cfg['load']:
-    net.load_state_dict(torch.load('net.pkl', map_location=device_out))
-    log = list(np.load('log.npy'))
-net = torch.nn.DataParallel(net, device_ids=cfg['device'])
-net = net.cuda(cfg['device'][0])
-net.train()
-
-
 # TODO: Define augment
 def aug_func(img, boxes):
     if random.random() < 0.3:
@@ -53,16 +41,28 @@ else:
 
 
 # Get train/eval dataset and dataloader
-dataset_train = Dataset_CSV(cfg['root_train'], cfg['list_train'], cfg['name_file'], 
-    size=net.module.view_size, train=True, normalize=True, 
+dataset_train = Dataset_CSV(cfg['root_train'], cfg['list_train'], cfg['name_file'], cfg['frame_name_file'],
+    size=1025, train=True, normalize=True,
     boxarea_th = cfg['boxarea_th'], 
     img_scale_min = cfg['img_scale_min'], augmentation=augmentation)
-dataset_eval = Dataset_CSV(cfg['root_eval'], cfg['list_eval'], cfg['name_file'], 
-    size=net.module.view_size, train=False, normalize=True)
+dataset_eval = Dataset_CSV(cfg['root_eval'], cfg['list_eval'], cfg['name_file'], cfg['frame_name_file'],
+    size=1025, train=False, normalize=True)
 loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=cfg['nbatch_train'], 
                     shuffle=True, num_workers=cfg['num_workers'], collate_fn=dataset_train.collate_fn)
 loader_eval = torch.utils.data.DataLoader(dataset_eval, batch_size=cfg['nbatch_eval'], 
                     shuffle=False, num_workers=cfg['num_workers'], collate_fn=dataset_eval.collate_fn)
+
+
+# Prepare the network and read log
+net = Detector(frame_weights=dataset_train.weights, pretrained=cfg['pretrain'])
+log = []
+device_out = 'cuda:%d' % (cfg['device'][0])
+if cfg['load']:
+    net.load_state_dict(torch.load('net.pkl', map_location=device_out))
+    log = list(np.load('log.npy'))
+net = torch.nn.DataParallel(net, device_ids=cfg['device'])
+net = net.cuda(cfg['device'][0])
+net.train()
 
 
 # Prepare optimizer
@@ -106,8 +106,8 @@ while True:
     if cfg['freeze_bn']:
         net.module.backbone.freeze_bn()
     trainer.step_epoch()
-    map_mean, map_50, map_75 = evaluator.step_epoch()
-    log.append([map_mean, map_50, map_75, trainer.step, trainer.epoch])
+    map_mean, map_50, map_75, accu = evaluator.step_epoch()
+    log.append([map_mean, map_50, map_75, accu, trainer.step, trainer.epoch])
     if cfg['save']:
         torch.save(net.module.state_dict(),'net.pkl')
         np.save('log.npy', log)

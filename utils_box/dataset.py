@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 
 
 class Dataset_CSV(data.Dataset):
-    def __init__(self, root, list_file, name_file, 
+    def __init__(self, root, list_file, name_file, frame_name_file,
                     size=1025, train=True, normalize=True, boxarea_th=35,
                     img_scale_min=0.8, augmentation=None):
         ''''
@@ -37,14 +37,16 @@ class Dataset_CSV(data.Dataset):
         self.fnames = []
         self.boxes = []
         self.labels = []
+        self.frame_labels = []
         self.LABEL_NAMES = []
+        self.FRAME_NAMES = []
         with open(list_file) as f:
             lines = f.readlines()
             self.num_samples = len(lines)
             for line in lines:
                 splited = line.strip().split()
                 self.fnames.append(splited[0])
-                num_boxes = (len(splited) - 1) // 5
+                num_boxes = (len(splited) - 2) // 5
                 box = []
                 label = []
                 for i in range(num_boxes):
@@ -57,10 +59,17 @@ class Dataset_CSV(data.Dataset):
                     label.append(int(c))
                 self.boxes.append(torch.FloatTensor(box))
                 self.labels.append(torch.LongTensor(label))
+                self.frame_labels.append(torch.tensor([int(splited[-1]) - 1], dtype=torch.long))
+        self.weights = 1 / torch.from_numpy(np.bincount(torch.cat(self.frame_labels).numpy()).astype(np.float32))
+        self.weights = self.weights / self.weights.sum()
         with open(name_file) as f:
             lines = f.readlines()
             for line in lines:
                 self.LABEL_NAMES.append(line.strip())
+        with open(frame_name_file) as f:
+            lines = f.readlines()
+            for line in lines:
+                self.FRAME_NAMES.append(line.strip())
         self.normalizer = transforms.Normalize((0.485,0.456,0.406), (0.229,0.224,0.225))
     
 
@@ -71,11 +80,12 @@ class Dataset_CSV(data.Dataset):
     def __getitem__(self, idx):
         '''
         Return:
-        img:    FloatTensor(3, size, size)
-        boxes:  FloatTensor(box_num, 4)
-        labels: LongTensor(box_num)
-        loc:    FloatTensor(4)
-        scale:  float scalar
+        img:          FloatTensor(3, size, size)
+        boxes:        FloatTensor(box_num, 4)
+        labels:       LongTensor(box_num)
+        frame_label:  LongTensor(1)
+        loc:          FloatTensor(4)
+        scale:        float scalar
         '''
         img = Image.open(os.path.join(self.root, self.fnames[idx]))
         if img.mode != 'RGB':
@@ -85,6 +95,7 @@ class Dataset_CSV(data.Dataset):
         boxes[:, 2].clamp_(max=float(img.size[1])-1)
         boxes[:, 3].clamp_(max=float(img.size[0])-1)
         labels = self.labels[idx].clone()
+        frame_label = self.frame_labels[idx].clone()
         if self.train:
             if random.random() < 0.5:
                 img, boxes = flip(img, boxes)
@@ -106,7 +117,7 @@ class Dataset_CSV(data.Dataset):
         img = transforms.ToTensor()(img)
         if self.normalize:
             img = self.normalizer(img)
-        return img, boxes, labels, loc, scale
+        return img, boxes, labels, frame_label, loc, scale
 
 
     def collate_fn(self, data):
@@ -118,7 +129,7 @@ class Dataset_CSV(data.Dataset):
         loc     FloatTensor(batch_num, 4)
         scale   FloatTensor(batch_num)
         '''
-        img, boxes, labels, loc, scale = zip(*data)
+        img, boxes, labels, frame_label, loc, scale = zip(*data)
         img = torch.stack(img)
         batch_num = len(boxes)
         N_max = 0
@@ -130,9 +141,10 @@ class Dataset_CSV(data.Dataset):
         for b in range(batch_num):
             boxes_t[b, 0:boxes[b].shape[0]] = boxes[b]
             labels_t[b, 0:boxes[b].shape[0]] = labels[b]
+        frame_label = torch.stack(frame_label)
         loc = torch.stack(loc)
         scale_t = torch.FloatTensor(scale)
-        return img, boxes_t, labels_t, loc, scale_t
+        return img, boxes_t, labels_t, frame_label, loc, scale_t
 
 
 
