@@ -42,11 +42,11 @@ else:
 
 # Get train/eval dataset and dataloader
 dataset_train = Dataset_CSV(cfg['root_train'], cfg['list_train'], cfg['name_file'], cfg['frame_name_file'],
-    size=1025, train=True, normalize=True,
+    size=513, train=True, normalize=True,
     boxarea_th = cfg['boxarea_th'], 
     img_scale_min = cfg['img_scale_min'], augmentation=augmentation)
 dataset_eval = Dataset_CSV(cfg['root_eval'], cfg['list_eval'], cfg['name_file'], cfg['frame_name_file'],
-    size=1025, train=False, normalize=True)
+    size=513, train=False, normalize=True)
 loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=cfg['nbatch_train'], 
                     shuffle=True, num_workers=cfg['num_workers'], collate_fn=dataset_train.collate_fn)
 loader_eval = torch.utils.data.DataLoader(dataset_eval, batch_size=cfg['nbatch_eval'], 
