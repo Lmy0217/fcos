@@ -15,6 +15,8 @@
 
 #include <cfloat>
 
+int Ceil_div(int a, int b) { return (a + b - 1); }
+
 // TODO make it in a common file
 #define CUDA_1D_KERNEL_LOOP(i, n)                            \
   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; \
@@ -109,7 +111,7 @@ at::Tensor SigmoidFocalLoss_forward_cuda(const at::Tensor &logits,
   auto losses = at::empty({num_samples, logits.size(1)}, logits.options());
   auto losses_size = num_samples * logits.size(1);
 
-  dim3 grid(std::min(THCCeilDiv((long)losses_size, 512L), 4096L));
+  dim3 grid(std::min(Ceil_div((long)losses_size, 512), 4096));
   dim3 block(512);
 
   if (losses.numel() == 0) {
@@ -121,7 +123,7 @@ at::Tensor SigmoidFocalLoss_forward_cuda(const at::Tensor &logits,
       logits.type(), "SigmoidFocalLoss_forward", [&] {
         SigmoidFocalLossForward<scalar_t><<<grid, block>>>(
             losses_size, logits.contiguous().data<scalar_t>(),
-            targets.contiguous().data<long>(), num_classes, gamma, alpha,
+            static_cast<long*>(targets.contiguous().data_ptr()), num_classes, gamma, alpha,
             num_samples, losses.data<scalar_t>());
       });
   THCudaCheck(cudaGetLastError());
@@ -147,7 +149,7 @@ at::Tensor SigmoidFocalLoss_backward_cuda(const at::Tensor &logits,
   auto d_logits = at::zeros({num_samples, num_classes}, logits.options());
   auto d_logits_size = num_samples * logits.size(1);
 
-  dim3 grid(std::min(THCCeilDiv((long)d_logits_size, 512L), 4096L));
+  dim3 grid(std::min(Ceil_div((long)d_logits_size, 512), 4096));
   dim3 block(512);
 
   if (d_logits.numel() == 0) {
@@ -159,7 +161,7 @@ at::Tensor SigmoidFocalLoss_backward_cuda(const at::Tensor &logits,
       logits.type(), "SigmoidFocalLoss_backward", [&] {
         SigmoidFocalLossBackward<scalar_t><<<grid, block>>>(
             d_logits_size, logits.contiguous().data<scalar_t>(),
-            targets.contiguous().data<long>(),
+            static_cast<long*>(targets.contiguous().data_ptr()),
             d_losses.contiguous().data<scalar_t>(), num_classes, gamma, alpha,
             num_samples, d_logits.data<scalar_t>());
       });

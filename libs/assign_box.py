@@ -58,5 +58,5 @@ try:
 
 except ImportError:
 
-    raise 'not find lib assign_box_cuda'
+    raise(ImportError, 'not find lib assign_box_cuda')
 

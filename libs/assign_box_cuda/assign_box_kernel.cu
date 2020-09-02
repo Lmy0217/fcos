@@ -147,7 +147,7 @@ at::Tensor assign_box_cuda(const at::Tensor &label_cls, const at::Tensor &label_
 	}
 	dim3 grid(b, ph*pw/1024+1), block(1024);
 	assign_box_kernel<<<grid, block>>>(
-		label_cls.contiguous().data<long>(),
+		static_cast<long*>(label_cls.contiguous().data_ptr()),
 		label_box.contiguous().data<float>(),
 		locs.contiguous().data<float>(),
 		output.contiguous().data<float>(),
