@@ -5,6 +5,7 @@ import os, math, random
 from PIL import Image, ImageDraw
 import torch.utils.data as data
 import torchvision.transforms as transforms
+import cv2
 
 
 
@@ -62,11 +63,11 @@ class Dataset_CSV(data.Dataset):
                 self.frame_labels.append(torch.tensor([int(splited[-1]) - 1], dtype=torch.long))
         self.weights = 1 / torch.from_numpy(np.bincount(torch.cat(self.frame_labels).numpy()).astype(np.float32))
         self.weights = self.weights / self.weights.sum()
-        with open(name_file) as f:
+        with open(name_file, encoding='UTF-8') as f:
             lines = f.readlines()
             for line in lines:
                 self.LABEL_NAMES.append(line.strip())
-        with open(frame_name_file) as f:
+        with open(frame_name_file, encoding='UTF-8') as f:
             lines = f.readlines()
             for line in lines:
                 self.FRAME_NAMES.append(line.strip())
@@ -87,7 +88,13 @@ class Dataset_CSV(data.Dataset):
         loc:          FloatTensor(4)
         scale:        float scalar
         '''
-        img = Image.open(os.path.join(self.root, self.fnames[idx]))
+
+        # img4, labels4 = self.load_mosaic(idx)
+        # idx = 5
+
+        nl = self.fnames[idx].split('/')
+        fn = os.path.join(r"D:\ubuntu\datasets\fetus_seg_data\Data_labeled", nl[-2], nl[-1])
+        img = Image.open(os.path.join(self.root, fn))
         if img.mode != 'RGB':
             img = img.convert('RGB')
         boxes = self.boxes[idx].clone()
@@ -145,6 +152,199 @@ class Dataset_CSV(data.Dataset):
         loc = torch.stack(loc)
         scale_t = torch.FloatTensor(scale)
         return img, boxes_t, labels_t, frame_label, loc, scale_t
+
+
+    def load_image(self, idx):
+        nl = self.fnames[idx].split('/')
+        fn = os.path.join(r"D:\ubuntu\datasets\fetus_seg_data\Data_labeled", nl[-2], nl[-1])
+        img = Image.open(os.path.join(self.root, fn))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        boxes = self.boxes[idx].clone()
+        boxes[:, :2].clamp_(min=1)
+        boxes[:, 2].clamp_(max=float(img.size[1]) - 1)
+        boxes[:, 3].clamp_(max=float(img.size[0]) - 1)
+        labels = self.labels[idx].clone()
+        frame_label = self.frame_labels[idx].clone()
+        img, boxes, loc, scale = center_fix(img, boxes, self.size)
+        hw = boxes[:, 2:] - boxes[:, :2]  # [N,2]
+        area = hw[:, 0] * hw[:, 1]  # [N]
+        mask = area >= self.boxarea_th
+        boxes = boxes[mask]
+        labels = labels[mask]
+        return img, boxes, labels, frame_label, loc, scale
+
+
+    def load_mosaic2(self, index):
+        img, boxes, labels, frame_label, loc, scale = self.load_mosaic(index)
+        img2, boxes2, labels2, frame_label2, loc2, scale2 = self.load_mosaic(random.randint(0, len(self.fnames) - 1))
+
+        r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
+        img = (img * r + img2 * (1 - r)).astype(np.uint8)
+        boxes = torch.cat((boxes, boxes2), dim=0)
+        labels = torch.cat((labels, labels2), dim=0)
+
+
+    def load_mosaic(self, index):
+        # loads images in a mosaic
+
+        boxes4, labels4, frame_label4, loc4, scale4 = [], [], [], [], []
+        s = self.size
+        yc, xc = s, s  # mosaic center x, y
+        indices = [index] + [random.randint(0, len(self.labels) - 1) for _ in range(3)]  # 3 additional image indices
+        for i, index in enumerate(indices):
+            # Load image
+            img, boxes, labels, frame_label, loc, scale = self.load_image(index)
+            w, h = img.size
+            img = np.array(img)
+
+            # place img in img4
+            if i == 0:  # top left
+                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+            elif i == 1:  # top right
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # bottom left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, max(xc, w), min(y2a - y1a, h)
+            elif i == 3:  # bottom right
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+
+            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            padw = x1a - x1b
+            padh = y1a - y1b
+
+            # Labels
+            if boxes.size(0) > 0:
+                boxes[:, 0::2] += padh
+                boxes[:, 1::2] += padw
+
+            boxes4.append(boxes)
+            labels4.append(labels)
+            frame_label4.append(frame_label.unsqueeze(0))
+            loc4.append(loc.unsqueeze(0))
+            scale4.append(scale)
+
+        # Concat/clip labels
+        boxes4 = torch.cat(boxes4, dim=0)
+        boxes4.clamp_(0, 2 * s)  # use with random_perspective
+        labels4 = torch.cat(labels4, dim=0).unsqueeze(1)
+        frame_label4 = torch.cat(frame_label4, dim=0)
+        loc4 = torch.cat(loc4, dim=0)
+        scale4 = torch.tensor(scale4).unsqueeze(1)
+
+        # img4, labels4 = replicate(img4, labels4)  # replicate
+
+            # Augment
+        img4, boxes4 = random_perspective(img4, boxes4)  # border to remove
+
+        return img4, boxes4, labels4, frame_label4, loc4, scale4
+
+
+
+def random_perspective(img, boxes=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0, border=(0, 0)):
+    # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
+    # targets = [cls, xyxy]
+
+    # Visualize
+    # import matplotlib.pyplot as plt
+    # ax = plt.subplots(1, 2, figsize=(12, 6))[1].ravel()
+    # ax[0].imshow(img[:, :, ::-1])  # base
+
+    height = img.shape[0] + border[0] * 2  # shape(h,w,c)
+    width = img.shape[1] + border[1] * 2
+
+    # Center
+    C = np.eye(3)
+    C[0, 2] = -img.shape[1] / 2  # x translation (pixels)
+    C[1, 2] = -img.shape[0] / 2  # y translation (pixels)
+
+    # Perspective
+    P = np.eye(3)
+    P[2, 0] = random.uniform(-perspective, perspective)  # x perspective (about y)
+    P[2, 1] = random.uniform(-perspective, perspective)  # y perspective (about x)
+
+    # Rotation and Scale
+    R = np.eye(3)
+    a = random.uniform(-degrees, degrees)
+    # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
+    s = random.uniform(1 - scale, 1 + scale)
+    # s = 2 ** random.uniform(-scale, scale)
+    R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
+
+    # Shear
+    S = np.eye(3)
+    S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
+    S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
+
+    # Translation
+    T = np.eye(3)
+    T[0, 2] = random.uniform(0.5 - translate, 0.5 + translate) * width  # x translation (pixels)
+    T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * height  # y translation (pixels)
+
+    # Combined rotation matrix
+    M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
+    if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
+        if perspective:
+            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+        else:  # affine
+            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+
+    # Visualize
+    # ax[1].imshow(img[:, :, ::-1])  # warped
+    # plt.show()
+
+    # Transform label coordinates
+    n = len(boxes)
+    if n:
+        boxes = boxes[:, [1, 0, 3, 2]]  # y1x1y2x2 -> x1y1x2y2
+
+        # warp points
+        xy = np.ones((n * 4, 3))
+        xy[:, :2] = boxes[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+        xy = xy @ M.T  # transform
+        if perspective:
+            xy = (xy[:, :2] / xy[:, 2:3]).reshape(n, 8)  # rescale
+        else:  # affine
+            xy = xy[:, :2].reshape(n, 8)
+
+        # create new boxes
+        x = xy[:, [0, 2, 4, 6]]
+        y = xy[:, [1, 3, 5, 7]]
+        xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+
+        # # apply angle-based reduction of bounding boxes
+        # radians = a * math.pi / 180
+        # reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
+        # x = (xy[:, 2] + xy[:, 0]) / 2
+        # y = (xy[:, 3] + xy[:, 1]) / 2
+        # w = (xy[:, 2] - xy[:, 0]) * reduction
+        # h = (xy[:, 3] - xy[:, 1]) * reduction
+        # xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
+
+        # clip boxes
+        xy[:, [0, 2]] = xy[:, [0, 2]].clip(0, width)
+        xy[:, [1, 3]] = xy[:, [1, 3]].clip(0, height)
+
+        # filter candidates
+        i = box_candidates(box1=boxes.T * s, box2=xy.T)
+        boxes = xy[i]
+
+        boxes = boxes[:, [1, 0, 3, 2]]  # x1y1x2y2 -> y1x1y2x2
+
+    return img, boxes
+
+
+
+def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.2):  # box1(4,n), box2(4,n)
+    # Compute candidate boxes: box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio
+    w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
+    w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
+    ar = np.maximum(w2 / (h2 + 1e-16), h2 / (w2 + 1e-16))  # aspect ratio
+    return (w2 > wh_thr) & (h2 > wh_thr) & (w2 * h2 / (w1 * h1 + 1e-16) > area_thr) & (ar < ar_thr)  # candidates
 
 
 
