@@ -12,7 +12,7 @@ import cv2
 class Dataset_CSV(data.Dataset):
     def __init__(self, root, list_file, name_file, frame_name_file,
                     size=1025, train=True, normalize=True, boxarea_th=35,
-                    img_scale_min=0.8, augmentation=None):
+                    img_scale_min=0.8, augmentation=None, mosaic=False):
         ''''
         Provide:
         self.fnames:      [fname1, fname2, fname3, ...] # image filename
@@ -35,6 +35,7 @@ class Dataset_CSV(data.Dataset):
         self.boxarea_th = boxarea_th
         self.img_scale_min = img_scale_min
         self.augmentation = augmentation
+        self.mosaic = mosaic
         self.fnames = []
         self.boxes = []
         self.labels = []
@@ -79,7 +80,7 @@ class Dataset_CSV(data.Dataset):
     
 
     def __getitem__(self, idx):
-        '''
+        """
         Return:
         img:          FloatTensor(3, size, size)
         boxes:        FloatTensor(box_num, 4)
@@ -87,43 +88,26 @@ class Dataset_CSV(data.Dataset):
         frame_label:  LongTensor(1)
         loc:          FloatTensor(4)
         scale:        float scalar
-        '''
+        """
 
-        # img4, labels4 = self.load_mosaic(idx)
-        # idx = 5
-
-        nl = self.fnames[idx].split('/')
-        fn = os.path.join(r"D:\ubuntu\datasets\fetus_seg_data\Data_labeled", nl[-2], nl[-1])
-        img = Image.open(os.path.join(self.root, fn))
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        boxes = self.boxes[idx].clone()
-        boxes[:, :2].clamp_(min=1)
-        boxes[:, 2].clamp_(max=float(img.size[1])-1)
-        boxes[:, 3].clamp_(max=float(img.size[0])-1)
-        labels = self.labels[idx].clone()
-        frame_label = self.frame_labels[idx].clone()
-        if self.train:
-            if random.random() < 0.5:
-                img, boxes = flip(img, boxes)
-            # TODO: other augmentation (img, boxes)
-            if self.augmentation is not None:
-                img, boxes = self.augmentation(img, boxes)
-            # standard procedure
-            if random.random() < 0.5:
-                img, boxes, loc, scale = random_resize_fix(img, boxes, self.size, self.img_scale_min)
-            else:
-                img, boxes, loc, scale = center_fix(img, boxes, self.size)
+        if self.mosaic:
+            img, boxes, labels, frame_label, loc, scale = self.load_mosaic(idx)
+            img = Image.fromarray(img)
+            labels = labels.squeeze(-1)
+            frame_label = frame_label.squeeze(-1)
+            # loc = torch.FloatTensor([min(loc[0, 0], loc[1, 0]), min(loc[0, 1], loc[2, 1]),
+            #                  max(loc[2, 2], loc[3, 2]) + self.size // 2, max(loc[1, 3], loc[3, 3]) + self.size // 2])
+            loc = torch.FloatTensor([0, 0, self.size, self.size])
+            scale = scale.squeeze(-1)
         else:
-            img, boxes, loc, scale = center_fix(img, boxes, self.size)
-        hw = boxes[:, 2:] - boxes[:, :2] # [N,2]
-        area = hw[:, 0] * hw[:, 1]       # [N]
-        mask = area >= self.boxarea_th
-        boxes = boxes[mask]
-        labels = labels[mask]
+            # idx = 5
+            img, boxes, labels, frame_label, loc, scale = self.load_image(idx, self.size, self.train)
+            scale = torch.FloatTensor([scale])
+
         img = transforms.ToTensor()(img)
         if self.normalize:
             img = self.normalizer(img)
+
         return img, boxes, labels, frame_label, loc, scale
 
 
@@ -150,14 +134,15 @@ class Dataset_CSV(data.Dataset):
             labels_t[b, 0:boxes[b].shape[0]] = labels[b]
         frame_label = torch.stack(frame_label)
         loc = torch.stack(loc)
-        scale_t = torch.FloatTensor(scale)
+        scale_t = torch.stack(scale)
         return img, boxes_t, labels_t, frame_label, loc, scale_t
 
 
-    def load_image(self, idx):
-        nl = self.fnames[idx].split('/')
-        fn = os.path.join(r"D:\ubuntu\datasets\fetus_seg_data\Data_labeled", nl[-2], nl[-1])
-        img = Image.open(os.path.join(self.root, fn))
+    def load_image(self, idx, size, train=False):
+        # nl = self.fnames[idx].split('/')
+        # fn = os.path.join(r"D:\ubuntu\datasets\fetus_seg_data\Data_labeled", nl[-2], nl[-1])
+        # img = Image.open(os.path.join(self.root, fn))
+        img = Image.open(os.path.join(self.root, self.fnames[idx]))
         if img.mode != 'RGB':
             img = img.convert('RGB')
         boxes = self.boxes[idx].clone()
@@ -166,7 +151,19 @@ class Dataset_CSV(data.Dataset):
         boxes[:, 3].clamp_(max=float(img.size[0]) - 1)
         labels = self.labels[idx].clone()
         frame_label = self.frame_labels[idx].clone()
-        img, boxes, loc, scale = center_fix(img, boxes, self.size)
+        if train:
+            if random.random() < 0.5:
+                img, boxes = flip(img, boxes)
+            # TODO: other augmentation (img, boxes)
+            if self.augmentation is not None:
+                img, boxes = self.augmentation(img, boxes)
+            # standard procedure
+            if random.random() < 0.5:
+                img, boxes, loc, scale = random_resize_fix(img, boxes, size, self.img_scale_min)
+            else:
+                img, boxes, loc, scale = center_fix(img, boxes, size)
+        else:
+            img, boxes, loc, scale = center_fix(img, boxes, size)
         hw = boxes[:, 2:] - boxes[:, :2]  # [N,2]
         area = hw[:, 0] * hw[:, 1]  # [N]
         mask = area >= self.boxarea_th
@@ -183,24 +180,29 @@ class Dataset_CSV(data.Dataset):
         img = (img * r + img2 * (1 - r)).astype(np.uint8)
         boxes = torch.cat((boxes, boxes2), dim=0)
         labels = torch.cat((labels, labels2), dim=0)
+        frame_label = torch.cat((frame_label, frame_label2), dim=0)
+        loc = torch.cat((loc, loc2), dim=0)
+        scale = torch.cat((scale, scale2), dim=0)
+
+        return img, boxes, labels, frame_label, loc, scale
 
 
     def load_mosaic(self, index):
         # loads images in a mosaic
 
         boxes4, labels4, frame_label4, loc4, scale4 = [], [], [], [], []
-        s = self.size
+        s = self.size // 2
         yc, xc = s, s  # mosaic center x, y
         indices = [index] + [random.randint(0, len(self.labels) - 1) for _ in range(3)]  # 3 additional image indices
         for i, index in enumerate(indices):
             # Load image
-            img, boxes, labels, frame_label, loc, scale = self.load_image(index)
+            img, boxes, labels, frame_label, loc, scale = self.load_image(index, s)
             w, h = img.size
             img = np.array(img)
 
             # place img in img4
             if i == 0:  # top left
-                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+                img4 = np.full((self.size, self.size, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
                 x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
                 x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
             elif i == 1:  # top right
@@ -234,14 +236,15 @@ class Dataset_CSV(data.Dataset):
         labels4 = torch.cat(labels4, dim=0).unsqueeze(1)
         frame_label4 = torch.cat(frame_label4, dim=0)
         loc4 = torch.cat(loc4, dim=0)
+
         scale4 = torch.tensor(scale4).unsqueeze(1)
 
         # img4, labels4 = replicate(img4, labels4)  # replicate
 
-            # Augment
-        img4, boxes4 = random_perspective(img4, boxes4)  # border to remove
+        # Augment
+        img4, boxes4 = random_perspective(img4, boxes4.numpy())  # border to remove
 
-        return img4, boxes4, labels4, frame_label4, loc4, scale4
+        return img4, torch.from_numpy(boxes4), labels4, frame_label4, loc4, scale4
 
 
 
@@ -304,7 +307,7 @@ def random_perspective(img, boxes=(), degrees=10, translate=.1, scale=.1, shear=
 
         # warp points
         xy = np.ones((n * 4, 3))
-        xy[:, :2] = boxes[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+        xy[:, :2] = boxes[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
         xy = xy @ M.T  # transform
         if perspective:
             xy = (xy[:, :2] / xy[:, 2:3]).reshape(n, 8)  # rescale
@@ -330,8 +333,8 @@ def random_perspective(img, boxes=(), degrees=10, translate=.1, scale=.1, shear=
         xy[:, [1, 3]] = xy[:, [1, 3]].clip(0, height)
 
         # filter candidates
-        i = box_candidates(box1=boxes.T * s, box2=xy.T)
-        boxes = xy[i]
+        #i = box_candidates(box1=boxes.T * s, box2=xy.T)
+        boxes = xy#[i]
 
         boxes = boxes[:, [1, 0, 3, 2]]  # x1y1x2y2 -> y1x1y2x2
 

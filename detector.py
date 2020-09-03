@@ -72,7 +72,7 @@ class Detector(nn.Module):
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(256, self.frame_classes)
+            nn.Linear(256, self.frame_classes * 4)
         )
 
         # reinit head =======================================================
@@ -168,6 +168,7 @@ class Detector(nn.Module):
         # pred_cls: F(b, n, classes)
         # pred_reg: F(b, n, 4)
         pred_frame = self.conv_frame(pred_list[-1])
+        pred_frame = pred_frame.view(pred_frame.shape[0], self.frame_classes, 4)
 
         if (label_class is not None) and (label_box is not None):
             # <= 200
@@ -199,7 +200,11 @@ class Detector(nn.Module):
                 loss_cls_b = sigmoid_focal_loss(pred_cls_b, target_cls_b, 2.0, 0.25).sum().view(1)
                 loss_reg_b = iou_loss(pred_reg_b, target_reg_b).sum().view(1)
                 loss.append((loss_cls_b + loss_reg_b) / float(num_pos[b]))
-            loss_frame = F.cross_entropy(pred_frame, label_frame.flatten(), self.frame_weights.to(pred_frame.device)).view((1,))
+            loss_frame = 0
+            for i in range(4):
+                loss_frame += F.cross_entropy(pred_frame[..., i], label_frame[..., i].flatten(),
+                                              self.frame_weights.to(pred_frame[..., i].device)).view((1,))
+            loss_frame /= 4
             return torch.cat(loss, dim=0), loss_frame # F(b)
         else:
             return self._decode(pred_cls, pred_reg, locs, pred_frame)
@@ -232,7 +237,7 @@ class Detector(nn.Module):
             pred_reg_b[:, 2].clamp_(max=float(locs[b, 2]))
             pred_reg_b[:, 3].clamp_(max=float(locs[b, 3]))
             _reg.append(pred_reg_b) # (topk, 4)
-        _frame = F.softmax(pred_frame, dim=1).max(1, keepdim=True)[1]
+        _frame = F.softmax(torch.mean(pred_frame, dim=-1), dim=1).max(1, keepdim=True)[1]
         return (torch.stack(_cls_i), torch.stack(_cls_p), torch.stack(_reg)), _frame
 
 
