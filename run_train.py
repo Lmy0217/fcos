@@ -94,8 +94,8 @@ def lr_func(step):
 trainer = api.Trainer(net, dataset_train, loader_train, cfg['device'], opt, cfg['grad_clip'], lr_func)
 evaluator = api.Evaluator(net, dataset_eval, loader_eval, cfg['device'])
 if cfg['load']:
-    trainer.step = log[-1][3]
-    trainer.epoch = log[-1][4]
+    trainer.step = log[-1][-2]
+    trainer.epoch = log[-1][-1]
 
 
 # Run epoch
