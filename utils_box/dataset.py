@@ -193,7 +193,10 @@ class Dataset_CSV(data.Dataset):
         boxes4, labels4, frame_label4, loc4, scale4 = [], [], [], [], []
         s = self.size // 2
         yc, xc = s, s  # mosaic center x, y
-        indices = [index] + [random.randint(0, len(self.labels) - 1) for _ in range(3)]  # 3 additional image indices
+        if self.train:
+            indices = [index] + [random.randint(0, len(self.labels) - 1) for _ in range(3)]  # 3 additional image indices
+        else:
+            indices = [index, index, index, index]
         for i, index in enumerate(indices):
             # Load image
             img, boxes, labels, frame_label, loc, scale = self.load_image(index, s)
